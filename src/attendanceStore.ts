@@ -1,5 +1,8 @@
 const SQLite = require('react-native-sqlite-storage');
 
+import { initializeDatabase } from './database';
+import { computeCosineSimilarity } from './embedding_matcher';
+
 SQLite.enablePromise(true);
 
 export type AttendanceRow = {
@@ -23,6 +26,8 @@ const TABLE_NAME = 'attendances';
 const MATCH_THRESHOLD = 0.75;
 
 let dbPromise: Promise<any> | null = null;
+let schemaPromise: Promise<void> | null = null;
+let syncLock: Promise<void> = Promise.resolve();
 
 function toBlob(embedding: Float32Array): ArrayBuffer {
   return embedding.buffer.slice(
@@ -68,21 +73,37 @@ async function openDatabase() {
   return dbPromise;
 }
 
+async function ensureSchema() {
+  if (!schemaPromise) {
+    schemaPromise = (async () => {
+      const db = await openDatabase();
+      await initializeDatabase(db);
+      await db.executeSql(
+        `CREATE TABLE IF NOT EXISTS ${TABLE_NAME} (
+          id TEXT PRIMARY KEY,
+          personnel_id TEXT,
+          embedding BLOB,
+          timestamp INTEGER,
+          synced INTEGER DEFAULT 0
+        );`,
+      );
+    })();
+  }
+
+  return schemaPromise;
+}
+
+export async function getDatabase() {
+  await ensureSchema();
+  return openDatabase();
+}
+
 export async function initAttendanceDb() {
-  const db = await openDatabase();
-  await db.executeSql(
-    `CREATE TABLE IF NOT EXISTS ${TABLE_NAME} (
-      id TEXT PRIMARY KEY,
-      personnel_id TEXT,
-      embedding BLOB,
-      timestamp INTEGER,
-      synced INTEGER DEFAULT 0
-    );`,
-  );
+  await ensureSchema();
 }
 
 export async function saveAttendance(row: AttendanceRow) {
-  const db = await openDatabase();
+  const db = await getDatabase();
   await db.executeSql(
     `INSERT OR REPLACE INTO ${TABLE_NAME} (id, personnel_id, embedding, timestamp, synced)
      VALUES (?, ?, ?, ?, ?);`,
@@ -91,7 +112,7 @@ export async function saveAttendance(row: AttendanceRow) {
 }
 
 export async function getUnsynced(): Promise<AttendanceRow[]> {
-  const db = await openDatabase();
+  const db = await getDatabase();
   const [result] = await db.executeSql(
     `SELECT id, personnel_id, embedding, timestamp, synced
      FROM ${TABLE_NAME}
@@ -114,12 +135,24 @@ export async function getUnsynced(): Promise<AttendanceRow[]> {
   return rows;
 }
 
+export async function getUnsyncedCount(): Promise<number> {
+  const db = await getDatabase();
+  const [result] = await db.executeSql(
+    `SELECT COUNT(*) AS count
+     FROM ${TABLE_NAME}
+     WHERE synced = 0;`,
+  );
+
+  const item = result.rows.item(0) as { count?: number } | undefined;
+  return Number(item?.count ?? 0);
+}
+
 export async function markPurged(ids: string[]) {
   if (ids.length === 0) {
     return;
   }
 
-  const db = await openDatabase();
+  const db = await getDatabase();
   const placeholders = ids.map(() => '?').join(', ');
   await db.executeSql(
     `DELETE FROM ${TABLE_NAME} WHERE id IN (${placeholders});`,
@@ -128,7 +161,7 @@ export async function markPurged(ids: string[]) {
 }
 
 export async function loadStoredEmbeddings(): Promise<StoredEmbeddingRow[]> {
-  const db = await openDatabase();
+  const db = await getDatabase();
   const [result] = await db.executeSql(
     `SELECT id, personnel_id, embedding, timestamp, synced
      FROM ${TABLE_NAME}
@@ -151,24 +184,16 @@ export async function loadStoredEmbeddings(): Promise<StoredEmbeddingRow[]> {
 }
 
 export function cosineSim(a: ArrayLike<number>, b: ArrayLike<number>) {
-  const length = Math.min(a.length, b.length);
-  let dot = 0;
-  let na = 0;
-  let nb = 0;
+  const vectorA = a instanceof Float32Array ? a : new Float32Array(Array.from(a));
+  const vectorB = b instanceof Float32Array ? b : new Float32Array(Array.from(b));
 
-  for (let index = 0; index < length; index += 1) {
-    const av = a[index];
-    const bv = b[index];
-    dot += av * bv;
-    na += av * av;
-    nb += bv * bv;
+  if (vectorA.length !== vectorB.length) {
+    throw new Error(
+      `Dimension mismatch: Vector A (${vectorA.length}) versus Vector B (${vectorB.length})`,
+    );
   }
 
-  if (na === 0 || nb === 0) {
-    return 0;
-  }
-
-  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+  return computeCosineSimilarity(vectorA, vectorB);
 }
 
 export async function authenticateEmbedding(liveEmbedding: ArrayLike<number>) {
@@ -193,7 +218,15 @@ export async function authenticateEmbedding(liveEmbedding: ArrayLike<number>) {
 }
 
 export async function syncAndPurge(uploadToS3: (row: AttendanceRow) => Promise<void>) {
-  const rows = await getUnsynced();
-  await Promise.all(rows.map(row => uploadToS3(row)));
-  await markPurged(rows.map(row => row.id));
+  syncLock = syncLock.catch(() => undefined).then(async () => {
+    const rows = await getUnsynced();
+
+    for (const row of rows) {
+      await uploadToS3(row);
+    }
+
+    await markPurged(rows.map(row => row.id));
+  });
+
+  return syncLock;
 }
