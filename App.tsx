@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   StatusBar,
@@ -9,7 +9,7 @@ import {
 import NetInfo from '@react-native-community/netinfo';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ort from 'onnxruntime-react-native';
-import { runOnJS } from 'react-native-worklets';
+import { scheduleOnRN } from 'react-native-worklets';
 import {
   Camera,
   useCameraDevice,
@@ -25,6 +25,9 @@ import {
 
 const FACE_MODEL = 'facenet_int8.ort';
 const FACE_INPUT_SIZE = 112;
+const LIVENESS_MODEL = 'liveness_int8.ort';
+const LIVENESS_INPUT_SIZE = 160;
+const LIVENESS_THRESHOLD = 0.5;
 
 function App() {
   return (
@@ -40,6 +43,7 @@ function AppContent() {
   const { hasPermission, requestPermission } = useCameraPermission();
   const device = useCameraDevice('front');
   const faceSessionRef = useRef<ort.InferenceSession | null>(null);
+  const livenessSessionRef = useRef<ort.InferenceSession | null>(null);
   const [modelStatus, setModelStatus] = useState('loading models');
   const [syncStatus, setSyncStatus] = useState('sync idle');
   const [authStatus, setAuthStatus] = useState('awaiting a valid embedding');
@@ -71,12 +75,14 @@ function AppContent() {
       try {
         await initAttendanceDb();
         const faceSession = await ort.InferenceSession.create(FACE_MODEL);
+        const livenessSession = await ort.InferenceSession.create(LIVENESS_MODEL);
 
         if (!isMounted) {
           return;
         }
 
         faceSessionRef.current = faceSession;
+        livenessSessionRef.current = livenessSession;
         setModelStatus('models loaded and attendance DB ready');
       } catch (error) {
         if (isMounted) {
@@ -111,27 +117,34 @@ function AppContent() {
     }
   }, [hasPermission, requestPermission]);
 
-  const frameOutput = useFrameOutput({
-    targetResolution: { width: FACE_INPUT_SIZE, height: FACE_INPUT_SIZE },
-    pixelFormat: 'rgb',
-    enablePreviewSizedOutputBuffers: true,
-    enablePhysicalBufferRotation: true,
-    dropFramesWhileBusy: true,
-    onFrame(frame) {
-      'worklet';
+  // Shim: provide a `useFrameProcessor`-like hook on top of the existing
+  // `useFrameOutput` API so callers can use the newer hook shape while
+  // remaining compatible with the installed `react-native-vision-camera` v5.
+  function useFrameProcessorShim(processor: (frame: any) => void, deps: any[]) {
+    const frameOutput = useFrameOutput({
+      onFrame(frame) {
+        'worklet';
+        processor(frame);
+      },
+    });
 
-      const faceSession = faceSessionRef.current;
+    return frameOutput;
+  }
 
-      if (!faceSession) {
-        frame.dispose();
-        return;
-      }
+  const frameProcessor = useFrameProcessorShim((frame) => {
+    'worklet';
 
-      void processFrame(frame, faceSession, handleEmbeddingOnJs);
-    },
-  });
+    const faceSession = faceSessionRef.current;
+    const livenessSession = livenessSessionRef.current;
 
-  const cameraOutputs = useMemo(() => [frameOutput], [frameOutput]);
+    if (!faceSession || !livenessSession) {
+      frame.dispose();
+      return;
+    }
+
+    // schedule the heavy JS inference on the RN JS thread
+    scheduleOnRN(processFrame, frame, faceSession, livenessSession, handleEmbeddingOnJs);
+  }, []);
 
   if (!device) {
     return (
@@ -160,7 +173,7 @@ function AppContent() {
         style={StyleSheet.absoluteFill}
         device={device}
         isActive={true}
-        outputs={cameraOutputs}
+        outputs={[frameProcessor]}
       />
 
       <View style={[styles.overlay, { paddingTop: insets.top + 16 }]}> 
@@ -182,9 +195,25 @@ function AppContent() {
 async function processFrame(
   frame: any,
   faceSession: ort.InferenceSession,
+  livenessSession: ort.InferenceSession,
   onEmbeddingMatched: (embeddingValues: number[]) => Promise<void> | void,
 ) {
   try {
+    const livenessInput = frameToInputTensor(frame, LIVENESS_INPUT_SIZE);
+    const livenessResult = await livenessSession.run({ input: livenessInput });
+    const livenessLogit = extractScalar(livenessResult);
+
+    if (livenessLogit === null) {
+      console.log('liveness score missing from liveness model output');
+      return;
+    }
+
+    const livenessScore = 1 / (1 + Math.exp(-livenessLogit));
+    if (livenessScore < LIVENESS_THRESHOLD) {
+      console.log(`liveness rejected: ${livenessScore.toFixed(3)}`);
+      return;
+    }
+
     const input = frameToInputTensor(frame, FACE_INPUT_SIZE);
     const faceResult = await faceSession.run({ input });
     const embedding = extractEmbedding(faceResult);
@@ -194,7 +223,7 @@ async function processFrame(
       return;
     }
 
-    runOnJS(onEmbeddingMatched)(Array.from(embedding));
+    scheduleOnRN(onEmbeddingMatched, Array.from(embedding));
   } catch (error) {
     console.log(`inference error: ${String(error)}`);
   } finally {
@@ -215,6 +244,25 @@ function extractEmbedding(result: ort.InferenceSession.OnnxValueMapType) {
 
   if (ArrayBuffer.isView(data)) {
     return new Float32Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+  }
+
+  return null;
+}
+
+function extractScalar(result: ort.InferenceSession.OnnxValueMapType) {
+  const output = result.logit ?? result.output ?? result['logit'] ?? result['output'];
+  if (!output || !('data' in output)) {
+    return null;
+  }
+
+  const data = output.data;
+  if (data instanceof Float32Array) {
+    return data[0] ?? null;
+  }
+
+  if (ArrayBuffer.isView(data)) {
+    const values = new Float32Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+    return values[0] ?? null;
   }
 
   return null;
