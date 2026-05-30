@@ -18,6 +18,8 @@
 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = DatalakeFace/Images.xcassets; sourceTree = "<group>"; };
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = DatalakeFace/Info.plist; sourceTree = "<group>"; };
 		13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = PrivacyInfo.xcprivacy; path = DatalakeFace/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		1F1B9A1A4A1A4A4A4A1A4A4A /* facenet_int8.ort */ = {isa = PBXFileReference; lastKnownFileType = file; name = facenet_int8.ort; path = DatalakeFace/facenet_int8.ort; sourceTree = "<group>"; };
+		1F1B9A1A4A1A4A4A4A1A4A4B /* liveness_int8.ort */ = {isa = PBXFileReference; lastKnownFileType = file; name = liveness_int8.ort; path = DatalakeFace/liveness_int8.ort; sourceTree = "<group>"; };
 		3B4392A12AC88292D35C810B /* Pods-DatalakeFace.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-DatalakeFace.debug.xcconfig"; path = "Target Support Files/Pods-DatalakeFace/Pods-DatalakeFace.debug.xcconfig"; sourceTree = "<group>"; };
 		5709B34CF0A7D63546082F79 /* Pods-DatalakeFace.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-DatalakeFace.release.xcconfig"; path = "Target Support Files/Pods-DatalakeFace/Pods-DatalakeFace.release.xcconfig"; sourceTree = "<group>"; };
 		5DCACB8F33CDC322A6C60F78 /* libPods-DatalakeFace.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-DatalakeFace.a"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -43,6 +45,8 @@
 			children = (
 				13B07FB51A68108700A75B9A /* Images.xcassets */,
 				761780EC2CA45674006654EE /* AppDelegate.swift */,
+				1F1B9A1A4A1A4A4A4A1A4A4A /* facenet_int8.ort */,
+				1F1B9A1A4A1A4A4A4A1A4A4B /* liveness_int8.ort */,
 				13B07FB61A68108700A75B9A /* Info.plist */,
 				81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */,
 				13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */,
@@ -159,6 +163,8 @@
 			files = (
 				81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */,
 				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
+				1F1B9A1A4A1A4A4A4A1A4A4A /* facenet_int8.ort in Resources */,
+				1F1B9A1A4A1A4A4A4A1A4A4B /* liveness_int8.ort in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
